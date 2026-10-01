@@ -1,0 +1,25 @@
+schema_version = "1.0.0"
+
+id = "randomize_value"
+version = "0.7.1"
+name = "Randomize Value"
+tagline = "Randomize a clicked property across selected objects or nodes"
+maintainer = "yozba"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+[permissions]
+clipboard = "Detect the vector component selected in the property menu"
+
+[build]
+paths = [
+  "__init__.py",
+  "randomize_core.py",
+  "LICENSE",
+  "README.md",
+]
