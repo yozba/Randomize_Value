@@ -35,7 +35,7 @@ random_value = randomize_core.random_value
 bl_info = {
     "name": "Randomize Value",
     "author": "yozba",
-    "version": (0, 7, 1),
+    "version": (0, 7, 2),
     "blender": (4, 2, 0),
     "location": "Property context menus",
     "description": "Randomize a clicked property across selected objects or nodes",
@@ -57,6 +57,7 @@ class TargetDescription:
     owner_path: str
     owner_type: str
     node_bl_idname: str
+    node_name: str
     is_group_node: bool
     node_group_name: str
     node_group_library: str
@@ -274,6 +275,7 @@ def _describe_button(context: bpy.types.Context) -> TargetDescription | None:
             owner_path=owner_path,
             owner_type=_rna_type_name(pointer),
             node_bl_idname=getattr(source_node, "bl_idname", ""),
+            node_name=getattr(source_node, "name", ""),
             is_group_node=hasattr(source_node, "node_tree"),
             node_group_name=getattr(source_node_group, "name_full", ""),
             node_group_library=getattr(source_node_group_library, "filepath", ""),
@@ -343,6 +345,7 @@ def _describe_button(context: bpy.types.Context) -> TargetDescription | None:
         owner_path=owner_path,
         owner_type=_rna_type_name(source_pointer),
         node_bl_idname="",
+        node_name="",
         is_group_node=False,
         node_group_name="",
         node_group_library="",
@@ -393,7 +396,7 @@ def _button_diagnostics(context: bpy.types.Context) -> str:
 
     return "; ".join(
         (
-            "Randomize Value 0.7.1",
+            "Randomize Value 0.7.2",
             f"area={getattr(getattr(context, 'area', None), 'type', 'None')}",
             f"property={identifier!r}",
             f"property_type={value_type!r}",
@@ -446,10 +449,19 @@ def _matching_node_targets(
     owner_type: str,
     property_name: str,
     is_custom: bool,
+    source_node_name: str = "",
 ) -> list[tuple[Any, Any, str]]:
     targets: list[tuple[Any, Any, str]] = []
     seen: set[int] = set()
-    for node in _selected_nodes(context):
+    nodes = _selected_nodes(context)
+    if not nodes and source_node_name:
+        node_tree = _node_tree_from_context(context)
+        node_collection = getattr(node_tree, "nodes", None)
+        source_node = node_collection.get(source_node_name) if node_collection is not None else None
+        if source_node is not None:
+            nodes = [source_node]
+
+    for node in nodes:
         if getattr(node, "bl_idname", "") != node_bl_idname:
             continue
         if is_group_node:
@@ -592,6 +604,7 @@ class RANDOMIZEVALUE_OT_to_selected(bpy.types.Operator):
     owner_path: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     owner_type: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     node_bl_idname: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    node_name: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     is_group_node: BoolProperty(options={"HIDDEN", "SKIP_SAVE"})
     node_group_name: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     node_group_library: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
@@ -723,6 +736,7 @@ class RANDOMIZEVALUE_OT_to_selected(bpy.types.Operator):
             self.owner_type,
             self.property_name,
             self.is_custom,
+            self.node_name,
         )
 
     def _targets(self, context: bpy.types.Context) -> list[tuple[Any, Any, str]]:
@@ -1037,7 +1051,7 @@ def register() -> None:
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.UI_MT_button_context_menu.append(_draw_button_context_menu)
-    print("[Randomize Value] 0.7.1 registered")
+    print("[Randomize Value] 0.7.2 registered")
 
 
 def unregister() -> None:

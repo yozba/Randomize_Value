@@ -57,6 +57,7 @@ def check_node_tree_targets(extension, node_tree, node_type, other_node_type):
     assert description.root_mode == extension.ROOT_NODE
     assert description.owner_path == "outputs[0]"
     assert description.node_bl_idname == source.bl_idname
+    assert description.node_name == source.name
 
     targets = extension._matching_node_targets(
         context,
@@ -72,6 +73,25 @@ def check_node_tree_targets(extension, node_tree, node_type, other_node_type):
     assert len(targets) == 2
     assert {item[0].name for item in targets} == {source.name, target.name}
     assert all(item[1].bl_rna.identifier == source_socket.bl_rna.identifier for item in targets)
+
+    source.select = False
+    target.select = False
+    other.select = False
+    context.selected_nodes = []
+    targets = extension._matching_node_targets(
+        context,
+        description.node_bl_idname,
+        description.is_group_node,
+        description.node_group_name,
+        description.node_group_library,
+        description.owner_path,
+        description.owner_type,
+        description.property_name,
+        description.is_custom,
+        description.node_name,
+    )
+    assert len(targets) == 1
+    assert targets[0][0] == source
 
 
 def check_group_node_targets(extension, node_tree):

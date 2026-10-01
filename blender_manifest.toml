@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "randomize_value"
-version = "0.7.1"
+version = "0.7.2"
 name = "Randomize Value"
 tagline = "Randomize a clicked property across selected objects or nodes"
 maintainer = "yozba"

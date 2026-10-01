@@ -30,6 +30,7 @@ Selected nodes with the same Blender node type are targeted. Socket properties a
 their position within the node and RNA type, not by their visible name alone. Group nodes must also
 reference the same Node Tree data-block (including the linked-library source when applicable).
 Geometry Nodes Menu sockets are supported, including editable Menu Switch items and fixed menus.
+If no node is selected, only the node whose property was right-clicked is targeted.
 
 For numeric properties, enable **Delta** to add the Min/Max random value to each object's
 current value. With Delta disabled, the same Min/Max fields are used as an absolute range.
@@ -83,8 +84,8 @@ Releases are created automatically when a semantic version tag is pushed. Update
 `blender_manifest.toml` and `bl_info`, commit the change, then push a matching tag:
 
 ```powershell
-git tag v0.7.1
-git push origin v0.7.1
+git tag v0.7.2
+git push origin v0.7.2
 ```
 
 The release workflow verifies that the tag and both source versions match, builds the extension
