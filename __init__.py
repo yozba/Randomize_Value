@@ -35,10 +35,10 @@ random_value = randomize_core.random_value
 bl_info = {
     "name": "Randomize Value",
     "author": "yozba",
-    "version": (0, 7, 2),
+    "version": (1, 0, 0),
     "blender": (4, 2, 0),
     "location": "Property context menus",
-    "description": "Randomize a clicked property across selected objects or nodes",
+    "description": "Randomize a clicked property across selected Blender items",
     "category": "Object",
 }
 
@@ -48,7 +48,49 @@ ROOT_DATA = "DATA"
 ROOT_MATERIAL = "MATERIAL"
 ROOT_MATERIAL_NODES = "MATERIAL_NODES"
 ROOT_NODE = "NODE"
+ROOT_POSE_BONE = "POSE_BONE"
+ROOT_EDIT_BONE = "EDIT_BONE"
+ROOT_BONE = "BONE"
+ROOT_STRIP = "STRIP"
+ROOT_FCURVE = "FCURVE"
+ROOT_FCURVE_MODIFIER = "FCURVE_MODIFIER"
+ROOT_KEYFRAME = "KEYFRAME"
+ROOT_ACTION = "ACTION"
+ROOT_NLA_STRIP = "NLA_STRIP"
+ROOT_MOVIE_TRACK = "MOVIE_TRACK"
+ROOT_SHAPE_KEY = "SHAPE_KEY"
+ROOT_ASSET_METADATA = "ASSET_METADATA"
+ROOT_NODE_INTERFACE = "NODE_INTERFACE"
 MAX_VECTOR_SIZE = 32
+
+CONTEXT_ROOT_MODES = frozenset(
+    {
+        ROOT_POSE_BONE,
+        ROOT_EDIT_BONE,
+        ROOT_BONE,
+        ROOT_STRIP,
+        ROOT_FCURVE,
+        ROOT_FCURVE_MODIFIER,
+        ROOT_KEYFRAME,
+        ROOT_ACTION,
+        ROOT_NLA_STRIP,
+        ROOT_MOVIE_TRACK,
+        ROOT_SHAPE_KEY,
+        ROOT_ASSET_METADATA,
+        ROOT_NODE_INTERFACE,
+    }
+)
+CONTEXT_COLLECTIONS = {
+    ROOT_POSE_BONE: ("selected_pose_bones",),
+    ROOT_FCURVE: ("selected_editable_fcurves",),
+    ROOT_KEYFRAME: ("selected_editable_keyframes",),
+    ROOT_ACTION: ("selected_editable_actions",),
+    ROOT_NLA_STRIP: ("selected_nla_strips",),
+    ROOT_MOVIE_TRACK: ("selected_movieclip_tracks",),
+}
+NODE_INTERFACE_GENERIC_PROPERTIES = frozenset(
+    {"socket_type", "description", "optional_label", "hide_value", "hide_in_modifier"}
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +112,24 @@ class TargetDescription:
     enum_flag: bool
     subtype: str
     unit: str
+    match_name: str = ""
+    match_type: str = ""
+    source_data_name: str = ""
+    source_data_library: str = ""
+    match_direction: str = ""
+
+
+@dataclass(frozen=True)
+class ContextOwner:
+    root_mode: str
+    root: Any
+    owner_path: str
+    owner_type: str
+    match_name: str = ""
+    match_type: str = ""
+    source_data_name: str = ""
+    source_data_library: str = ""
+    match_direction: str = ""
 
 
 def _same_rna_value(first: Any, second: Any) -> bool:
@@ -164,6 +224,187 @@ def _selected_nodes(context: bpy.types.Context) -> list[Any]:
     return sorted(nodes, key=lambda node: getattr(node, "name", ""))
 
 
+def _rna_is_a(value: Any, type_name: str) -> bool:
+    rna_type = getattr(bpy.types, type_name, None)
+    return rna_type is not None and isinstance(value, rna_type)
+
+
+def _context_values(context: bpy.types.Context, *names: str) -> list[Any]:
+    values: list[Any] = []
+    seen: set[int] = set()
+    for name in names:
+        try:
+            collection = getattr(context, name, ()) or ()
+        except (AttributeError, ReferenceError):
+            continue
+        for value in collection:
+            identity = _owner_identity(value)
+            if identity not in seen:
+                seen.add(identity)
+                values.append(value)
+    return values
+
+
+def _append_unique(values: list[Any], value: Any) -> None:
+    if value is None:
+        return
+    identity = _owner_identity(value)
+    if all(_owner_identity(item) != identity for item in values):
+        values.append(value)
+
+
+def _relative_owner_path(root: Any, owner: Any) -> str | None:
+    if _same_rna_value(root, owner):
+        return ""
+
+    for property_name in ("color",):
+        if _same_rna_value(getattr(root, property_name, None), owner):
+            return property_name
+
+    try:
+        root_path = root.path_from_id()
+        owner_path = owner.path_from_id()
+    except (AttributeError, ValueError, ReferenceError):
+        return None
+    prefix = f"{root_path}." if root_path else ""
+    if prefix and owner_path.startswith(prefix):
+        return owner_path[len(prefix) :]
+    return None
+
+
+def _bone_context_roots(context: bpy.types.Context) -> list[tuple[str, Any]]:
+    roots: list[tuple[str, Any]] = []
+    seen: set[int] = set()
+
+    def add(mode: str, value: Any) -> None:
+        if value is None:
+            return
+        identity = _owner_identity(value)
+        if identity not in seen:
+            seen.add(identity)
+            roots.append((mode, value))
+
+    active_pose_bone = getattr(context, "active_pose_bone", None)
+    add(ROOT_POSE_BONE, active_pose_bone)
+    add(ROOT_BONE, getattr(active_pose_bone, "bone", None))
+
+    active_bone = getattr(context, "active_bone", None)
+    if _rna_is_a(active_bone, "EditBone"):
+        add(ROOT_EDIT_BONE, active_bone)
+    elif _rna_is_a(active_bone, "Bone"):
+        add(ROOT_BONE, active_bone)
+
+    for pose_bone in _context_values(context, "selected_pose_bones"):
+        add(ROOT_POSE_BONE, pose_bone)
+        add(ROOT_BONE, getattr(pose_bone, "bone", None))
+    for edit_bone in _context_values(context, "selected_editable_bones", "selected_bones"):
+        add(ROOT_EDIT_BONE, edit_bone)
+    return roots
+
+
+def _strip_context_roots(context: bpy.types.Context) -> list[Any]:
+    strips = _context_values(context, "selected_editable_strips", "selected_strips")
+    scene = getattr(context, "scene", None)
+    sequence_editor = getattr(scene, "sequence_editor", None)
+    _append_unique(strips, getattr(sequence_editor, "active_strip", None))
+    return strips
+
+
+def _find_relative_context_owner(
+    pointer: Any,
+    roots: list[tuple[str, Any]],
+) -> ContextOwner | None:
+    for root_mode, root in roots:
+        owner_path = _relative_owner_path(root, pointer)
+        if owner_path is not None:
+            return ContextOwner(
+                root_mode=root_mode,
+                root=root,
+                owner_path=owner_path,
+                owner_type=_rna_type_name(pointer),
+            )
+    return None
+
+
+def _find_context_owner(
+    pointer: Any,
+    context: bpy.types.Context,
+    property_name: str = "",
+) -> ContextOwner | None:
+    if pointer is None:
+        return None
+
+    direct_types = (
+        ("PoseBone", ROOT_POSE_BONE),
+        ("EditBone", ROOT_EDIT_BONE),
+        ("Bone", ROOT_BONE),
+        ("Strip", ROOT_STRIP),
+        ("FCurve", ROOT_FCURVE),
+        ("Keyframe", ROOT_KEYFRAME),
+        ("Action", ROOT_ACTION),
+        ("NlaStrip", ROOT_NLA_STRIP),
+        ("MovieTrackingTrack", ROOT_MOVIE_TRACK),
+    )
+    for type_name, root_mode in direct_types:
+        if _rna_is_a(pointer, type_name):
+            owner_type = "" if root_mode == ROOT_STRIP else _rna_type_name(pointer)
+            return ContextOwner(root_mode, pointer, "", owner_type)
+
+    if _rna_is_a(pointer, "FModifier"):
+        return ContextOwner(
+            ROOT_FCURVE_MODIFIER,
+            pointer,
+            "",
+            _rna_type_name(pointer),
+            match_name=getattr(pointer, "name", ""),
+            match_type=getattr(pointer, "type", ""),
+        )
+
+    if _rna_is_a(pointer, "ShapeKey"):
+        key = getattr(pointer, "id_data", None)
+        library = getattr(key, "library", None)
+        return ContextOwner(
+            ROOT_SHAPE_KEY,
+            pointer,
+            "",
+            _rna_type_name(pointer),
+            source_data_name=getattr(key, "name_full", ""),
+            source_data_library=getattr(library, "filepath", ""),
+        )
+
+    if _rna_is_a(pointer, "AssetMetaData"):
+        return ContextOwner(ROOT_ASSET_METADATA, pointer, "", _rna_type_name(pointer))
+
+    if _rna_is_a(pointer, "NodeTreeInterfaceItem"):
+        node_tree = getattr(pointer, "id_data", None)
+        library = getattr(node_tree, "library", None)
+        item_type = getattr(pointer, "item_type", "")
+        socket_type = getattr(pointer, "socket_type", "") if item_type == "SOCKET" else ""
+        strict_owner_type = property_name not in (
+            *NODE_INTERFACE_GENERIC_PROPERTIES,
+            "structure_type",
+            "attribute_domain",
+        )
+        return ContextOwner(
+            ROOT_NODE_INTERFACE,
+            pointer,
+            "",
+            _rna_type_name(pointer) if strict_owner_type else "",
+            match_name=item_type,
+            match_type=socket_type,
+            source_data_name=getattr(node_tree, "name_full", ""),
+            source_data_library=getattr(library, "filepath", ""),
+            match_direction=getattr(pointer, "in_out", ""),
+        )
+
+    bone_owner = _find_relative_context_owner(pointer, _bone_context_roots(context))
+    if bone_owner is not None:
+        return bone_owner
+
+    strip_roots = [(ROOT_STRIP, strip) for strip in _strip_context_roots(context)]
+    return _find_relative_context_owner(pointer, strip_roots)
+
+
 def _rna_property(owner: Any, property_name: str) -> Any | None:
     try:
         return owner.bl_rna.properties[property_name]
@@ -227,6 +468,30 @@ def _custom_property_name(pointer: Any, identifier: str) -> str | None:
     return None
 
 
+def _property_array_length(
+    owner: Any,
+    prop: Any,
+    property_name: str,
+    is_custom: bool,
+) -> int | None:
+    try:
+        current_value = _get_property_value(owner, property_name, is_custom)
+    except (AttributeError, KeyError, TypeError, ValueError, ReferenceError):
+        return None
+
+    array_length = int(getattr(prop, "array_length", 0))
+    if not isinstance(current_value, (str, bytes, bool, int, float, set)):
+        try:
+            current_items = list(current_value)
+            if all(isinstance(item, (bool, int, float)) for item in current_items):
+                # Dynamic ID properties can report a stale or generic RNA
+                # array length. The actual flat value is authoritative.
+                array_length = len(current_items)
+        except (TypeError, ReferenceError):
+            pass
+    return array_length if array_length <= MAX_VECTOR_SIZE else None
+
+
 def _describe_button(context: bpy.types.Context) -> TargetDescription | None:
     pointer = getattr(context, "button_pointer", None)
     prop = getattr(context, "button_prop", None)
@@ -251,20 +516,8 @@ def _describe_button(context: bpy.types.Context) -> TargetDescription | None:
     node_owner = _find_node_owner(pointer, context)
     if node_owner is not None:
         source_node, owner_path = node_owner
-        try:
-            current_value = _get_property_value(pointer, property_name, is_custom)
-        except (AttributeError, KeyError, TypeError, ValueError, ReferenceError):
-            return None
-
-        array_length = int(getattr(prop, "array_length", 0))
-        if not isinstance(current_value, (str, bytes, bool, int, float, set)):
-            try:
-                current_items = list(current_value)
-                if all(isinstance(item, (bool, int, float)) for item in current_items):
-                    array_length = len(current_items)
-            except (TypeError, ReferenceError):
-                pass
-        if array_length > MAX_VECTOR_SIZE:
+        array_length = _property_array_length(pointer, prop, property_name, is_custom)
+        if array_length is None:
             return None
 
         label = getattr(pointer, "name", "") if isinstance(pointer, bpy.types.NodeSocket) else ""
@@ -288,6 +541,37 @@ def _describe_button(context: bpy.types.Context) -> TargetDescription | None:
             enum_flag=bool(getattr(prop, "is_enum_flag", False)),
             subtype=getattr(prop, "subtype", "NONE"),
             unit=getattr(prop, "unit", "NONE"),
+        )
+
+    context_owner = _find_context_owner(pointer, context, property_name)
+    if context_owner is not None:
+        array_length = _property_array_length(pointer, prop, property_name, is_custom)
+        if array_length is None:
+            return None
+
+        return TargetDescription(
+            root_mode=context_owner.root_mode,
+            owner_path=context_owner.owner_path,
+            owner_type=context_owner.owner_type,
+            node_bl_idname="",
+            node_name="",
+            is_group_node=False,
+            node_group_name="",
+            node_group_library="",
+            property_name=property_name,
+            property_label=getattr(prop, "name", "") or property_name,
+            geometry_node_group_name="",
+            value_type=value_type,
+            is_custom=is_custom,
+            array_length=array_length,
+            enum_flag=bool(getattr(prop, "is_enum_flag", False)),
+            subtype=getattr(prop, "subtype", "NONE"),
+            unit=getattr(prop, "unit", "NONE"),
+            match_name=context_owner.match_name,
+            match_type=context_owner.match_type,
+            source_data_name=context_owner.source_data_name,
+            source_data_library=context_owner.source_data_library,
+            match_direction=context_owner.match_direction,
         )
 
     root_mode = None
@@ -314,24 +598,13 @@ def _describe_button(context: bpy.types.Context) -> TargetDescription | None:
     if root_mode is None:
         return None
 
+    root = _root_for_object(root_source_object, root_mode)
     try:
-        root = _root_for_object(root_source_object, root_mode)
         owner_path = "" if _same_rna_value(source_pointer, root) else source_pointer.path_from_id()
-        current_value = _get_property_value(source_pointer, property_name, is_custom)
-    except (AttributeError, KeyError, TypeError, ValueError, ReferenceError):
+    except (AttributeError, ValueError, ReferenceError):
         return None
-
-    array_length = int(getattr(prop, "array_length", 0))
-    if not isinstance(current_value, (str, bytes, bool, int, float, set)):
-        try:
-            current_items = list(current_value)
-            if all(isinstance(item, (bool, int, float)) for item in current_items):
-                # Dynamic ID properties can report a stale or generic RNA
-                # array length. The actual flat value is authoritative.
-                array_length = len(current_items)
-        except (TypeError, ReferenceError):
-            pass
-    if array_length > MAX_VECTOR_SIZE:
+    array_length = _property_array_length(source_pointer, prop, property_name, is_custom)
+    if array_length is None:
         return None
 
     geometry_socket_name = _geometry_socket_name(source_pointer, property_name) if is_custom else ""
@@ -396,7 +669,7 @@ def _button_diagnostics(context: bpy.types.Context) -> str:
 
     return "; ".join(
         (
-            "Randomize Value 0.7.2",
+            "Randomize Value 1.0.0",
             f"area={getattr(getattr(context, 'area', None), 'type', 'None')}",
             f"property={identifier!r}",
             f"property_type={value_type!r}",
@@ -494,12 +767,149 @@ def _matching_node_targets(
     return targets
 
 
+def _data_block_by_name(collection_name: str, name: str, library_path: str) -> Any | None:
+    for data_block in getattr(bpy.data, collection_name, ()):
+        library = getattr(data_block, "library", None)
+        if (
+            getattr(data_block, "name_full", "") == name
+            and getattr(library, "filepath", "") == library_path
+        ):
+            return data_block
+    return None
+
+
+def _selected_context_roots(
+    context: bpy.types.Context,
+    root_mode: str,
+    property_name: str,
+    source_data_name: str,
+    source_data_library: str,
+) -> list[Any]:
+    collection_names = CONTEXT_COLLECTIONS.get(root_mode)
+    if collection_names is not None:
+        return _context_values(context, *collection_names)
+    if root_mode == ROOT_BONE:
+        bones: list[Any] = []
+        for pose_bone in _context_values(context, "selected_pose_bones"):
+            _append_unique(bones, getattr(pose_bone, "bone", None))
+        return bones
+    if root_mode == ROOT_EDIT_BONE:
+        collection_name = "selected_bones" if property_name == "lock" else "selected_editable_bones"
+        return _context_values(context, collection_name)
+    if root_mode == ROOT_STRIP:
+        collection_name = "selected_strips" if property_name == "lock" else "selected_editable_strips"
+        return _context_values(context, collection_name)
+    if root_mode == ROOT_SHAPE_KEY:
+        key = _data_block_by_name("shape_keys", source_data_name, source_data_library)
+        return [shape for shape in getattr(key, "key_blocks", ()) if getattr(shape, "select", False)]
+    if root_mode == ROOT_ASSET_METADATA:
+        metadata: list[Any] = []
+        for asset in _context_values(context, "selected_assets"):
+            _append_unique(metadata, getattr(asset, "metadata", None))
+        return metadata
+    if root_mode == ROOT_NODE_INTERFACE:
+        node_group = _data_block_by_name("node_groups", source_data_name, source_data_library)
+        interface = getattr(node_group, "interface", None)
+        return [
+            item
+            for item in getattr(interface, "items_tree", ())
+            if getattr(item, "select", False)
+        ]
+    return []
+
+
+def _matching_context_targets(
+    context: bpy.types.Context,
+    root_mode: str,
+    owner_path: str,
+    owner_type: str,
+    property_name: str,
+    value_type: str,
+    is_custom: bool,
+    match_name: str,
+    match_type: str,
+    source_data_name: str,
+    source_data_library: str,
+    match_direction: str,
+) -> list[tuple[Any, Any, str]]:
+    if root_mode == ROOT_NODE_INTERFACE:
+        if property_name == "structure_type" and match_direction != "INPUT":
+            return []
+        if property_name == "attribute_domain" and match_direction != "OUTPUT":
+            return []
+
+    if root_mode == ROOT_FCURVE_MODIFIER:
+        roots: list[Any] = []
+        for fcurve in _context_values(context, "selected_editable_fcurves"):
+            for modifier in getattr(fcurve, "modifiers", ()):
+                if (
+                    getattr(modifier, "name", "") == match_name
+                    and getattr(modifier, "type", "") == match_type
+                ):
+                    roots.append(modifier)
+                    break
+    else:
+        roots = _selected_context_roots(
+            context,
+            root_mode,
+            property_name,
+            source_data_name,
+            source_data_library,
+        )
+
+    targets: list[tuple[Any, Any, str]] = []
+    seen: set[int] = set()
+    for root in roots:
+        if root_mode == ROOT_NODE_INTERFACE:
+            if getattr(root, "item_type", "") != match_name:
+                continue
+            if match_name == "SOCKET":
+                if property_name == "structure_type" and getattr(root, "in_out", "") != "INPUT":
+                    continue
+                if property_name == "attribute_domain" and getattr(root, "in_out", "") != "OUTPUT":
+                    continue
+                if (
+                    property_name not in NODE_INTERFACE_GENERIC_PROPERTIES
+                    and property_name not in {"structure_type", "attribute_domain"}
+                    and getattr(root, "socket_type", "") != match_type
+                ):
+                    continue
+        try:
+            owner = root if not owner_path else root.path_resolve(owner_path)
+        except (AttributeError, ValueError, ReferenceError):
+            continue
+        if owner_type and _rna_type_name(owner) != owner_type:
+            continue
+        prop = _rna_property(owner, property_name)
+        if not is_custom and (
+            prop is None or getattr(prop, "type", "") != value_type
+        ):
+            continue
+        identity = _owner_identity(owner)
+        if identity in seen:
+            continue
+        try:
+            _get_property_value(owner, property_name, is_custom)
+        except (AttributeError, KeyError, TypeError, ReferenceError):
+            continue
+        seen.add(identity)
+        targets.append((root, owner, property_name))
+    return targets
+
+
 def _tag_property_update(target: Any, owner: Any) -> None:
     """Tag the target and property-owning data-block for dependency evaluation."""
 
     tagged: set[int] = set()
-    for data_block in (target, getattr(owner, "id_data", None), owner):
-        update_tag = getattr(data_block, "update_tag", None)
+    try:
+        id_data = getattr(owner, "id_data", None)
+    except ReferenceError:
+        id_data = None
+    for data_block in (target, id_data, owner):
+        try:
+            update_tag = getattr(data_block, "update_tag", None)
+        except ReferenceError:
+            continue
         if update_tag is None:
             continue
         identity = _owner_identity(data_block)
@@ -517,12 +927,24 @@ def _redraw_editors(context: bpy.types.Context) -> None:
     for window in getattr(window_manager, "windows", ()):
         screen = getattr(window, "screen", None)
         for area in getattr(screen, "areas", ()):
-            if area.type in {"VIEW_3D", "NODE_EDITOR"}:
+            if area.type in {
+                "VIEW_3D",
+                "NODE_EDITOR",
+                "DOPESHEET_EDITOR",
+                "GRAPH_EDITOR",
+                "NLA_EDITOR",
+                "SEQUENCE_EDITOR",
+                "CLIP_EDITOR",
+                "PROPERTIES",
+            }:
                 area.tag_redraw()
 
 
 def _selected_objects(context: bpy.types.Context) -> list[bpy.types.Object]:
     objects = list(getattr(context, "selected_objects", ()) or ())
+    for selected_id in getattr(context, "selected_ids", ()) or ():
+        if _rna_is_a(selected_id, "Object") and selected_id not in objects:
+            objects.append(selected_id)
     active = getattr(context, "active_object", None)
     if active is not None and active not in objects:
         objects.append(active)
@@ -617,6 +1039,11 @@ class RANDOMIZEVALUE_OT_to_selected(bpy.types.Operator):
     enum_flag: BoolProperty(options={"HIDDEN", "SKIP_SAVE"})
     subtype: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     unit: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    match_name: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    match_type: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    source_data_name: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    source_data_library: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    match_direction: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     single_component: BoolProperty(options={"HIDDEN", "SKIP_SAVE"})
     component_index: IntProperty(default=-1, options={"HIDDEN", "SKIP_SAVE"})
 
@@ -703,10 +1130,11 @@ class RANDOMIZEVALUE_OT_to_selected(bpy.types.Operator):
     )
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
-        return (
-            getattr(context, "active_object", None) is not None
-            or _node_tree_from_context(context) is not None
-        )
+        # The context-menu button already carries a complete target
+        # description. Requiring an active Object here would incorrectly
+        # disable the operator in editors such as the Sequencer, Graph Editor,
+        # and Asset Browser. Invalid direct invocations cancel in invoke().
+        return True
 
     def _owner_and_property(self, obj: bpy.types.Object) -> tuple[Any, str] | None:
         owner = _resolve_owner(obj, self.root_mode, self.owner_path)
@@ -742,6 +1170,21 @@ class RANDOMIZEVALUE_OT_to_selected(bpy.types.Operator):
     def _targets(self, context: bpy.types.Context) -> list[tuple[Any, Any, str]]:
         if self.root_mode == ROOT_NODE:
             return self._node_targets(context)
+        if self.root_mode in CONTEXT_ROOT_MODES:
+            return _matching_context_targets(
+                context,
+                self.root_mode,
+                self.owner_path,
+                self.owner_type,
+                self.property_name,
+                self.value_type,
+                self.is_custom,
+                self.match_name,
+                self.match_type,
+                self.source_data_name,
+                self.source_data_library,
+                self.match_direction,
+            )
 
         targets: list[tuple[Any, Any, str]] = []
         seen: set[int] = set()
@@ -762,7 +1205,23 @@ class RANDOMIZEVALUE_OT_to_selected(bpy.types.Operator):
         return targets
 
     def _target_name(self) -> str:
-        return "node" if self.root_mode == ROOT_NODE else "object"
+        labels = {
+            ROOT_NODE: "node",
+            ROOT_POSE_BONE: "pose bone",
+            ROOT_EDIT_BONE: "edit bone",
+            ROOT_BONE: "bone",
+            ROOT_STRIP: "strip",
+            ROOT_FCURVE: "F-Curve",
+            ROOT_FCURVE_MODIFIER: "F-Curve modifier",
+            ROOT_KEYFRAME: "keyframe",
+            ROOT_ACTION: "action",
+            ROOT_NLA_STRIP: "NLA strip",
+            ROOT_MOVIE_TRACK: "tracking track",
+            ROOT_SHAPE_KEY: "shape key",
+            ROOT_ASSET_METADATA: "asset",
+            ROOT_NODE_INTERFACE: "node interface item",
+        }
+        return labels.get(self.root_mode, "object")
 
     def _range_property_names(self) -> tuple[str, str]:
         use_vector_range = self.array_length > 0 and not self.single_component
@@ -1051,7 +1510,7 @@ def register() -> None:
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.UI_MT_button_context_menu.append(_draw_button_context_menu)
-    print("[Randomize Value] 0.7.2 registered")
+    print("[Randomize Value] 1.0.0 registered")
 
 
 def unregister() -> None:

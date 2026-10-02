@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "randomize_value"
-version = "0.7.2"
+version = "1.0.0"
 name = "Randomize Value"
-tagline = "Randomize a clicked property across selected objects or nodes"
+tagline = "Randomize a clicked property across selected Blender items"
 maintainer = "yozba"
 type = "add-on"
 

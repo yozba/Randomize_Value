@@ -1,7 +1,7 @@
 # Randomize Value
 
 Randomize Value is a Blender extension that assigns reproducible random values to the same
-property across selected objects or selected nodes.
+property across selected Blender items.
 
 ## Requirements
 
@@ -51,6 +51,19 @@ modifier path (including its name), node-group data-block, and internal property
 socket names alone are never used for matching. An object that does not contain a matching property
 is skipped. Shared data-blocks are changed only once.
 
+The extension also follows Blender's editor-specific Copy to Selected targets:
+
+- Selected Pose Bones, Edit Bones, bone colors, and matching bone constraints.
+- Selected F-Curves, matching F-Curve modifiers, keyframes, Actions, and NLA strips.
+- Selected Video Sequencer strips, including nested Transform properties.
+- Selected Shape Keys in the same Shape Key data-block.
+- Selected Movie Tracking tracks.
+- Selected node-group interface sockets or panels, with compatible socket types where required.
+- Selected Asset Browser metadata and objects selected from the Outliner.
+
+Matching F-Curve modifiers must have the same name and type. Sequencer strips are allowed to have
+different strip types when the same compatible property exists, matching Blender's behavior.
+
 String, pointer, and collection properties are intentionally excluded because they do not have a
 generally useful, type-derived randomization rule.
 
@@ -84,8 +97,8 @@ Releases are created automatically when a semantic version tag is pushed. Update
 `blender_manifest.toml` and `bl_info`, commit the change, then push a matching tag:
 
 ```powershell
-git tag v0.7.2
-git push origin v0.7.2
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 The release workflow verifies that the tag and both source versions match, builds the extension

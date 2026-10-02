@@ -33,6 +33,327 @@ def vector_property(values):
     return tuple(values) + (0.0,) * (32 - len(values))
 
 
+def context_targets(extension, context, description):
+    return extension._matching_context_targets(
+        context,
+        description.root_mode,
+        description.owner_path,
+        description.owner_type,
+        description.property_name,
+        description.value_type,
+        description.is_custom,
+        description.match_name,
+        description.match_type,
+        description.source_data_name,
+        description.source_data_library,
+        description.match_direction,
+    )
+
+
+def button_context(pointer, property_name, **values):
+    defaults = {
+        "button_pointer": pointer,
+        "button_prop": pointer.bl_rna.properties[property_name],
+        "space_data": None,
+        "object": None,
+        "active_object": None,
+        "selected_objects": [],
+        "active_pose_bone": None,
+        "active_bone": None,
+        "selected_pose_bones": [],
+        "selected_editable_bones": [],
+        "selected_bones": [],
+        "selected_editable_strips": [],
+        "selected_strips": [],
+        "selected_editable_fcurves": [],
+        "selected_editable_keyframes": [],
+        "selected_editable_actions": [],
+        "selected_nla_strips": [],
+        "selected_movieclip_tracks": [],
+        "selected_assets": [],
+        "selected_ids": [],
+        "scene": bpy.context.scene,
+    }
+    defaults.update(values)
+    return SimpleNamespace(**defaults)
+
+
+def check_bone_targets(extension):
+    armature = bpy.data.armatures.new("RandomizeValue_Armature")
+    armature_object = bpy.data.objects.new("RandomizeValue_Armature", armature)
+    bpy.context.scene.collection.objects.link(armature_object)
+    bpy.context.view_layer.objects.active = armature_object
+    armature_object.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    first_edit = armature.edit_bones.new("First")
+    first_edit.tail = (0.0, 0.0, 1.0)
+    second_edit = armature.edit_bones.new("Second")
+    second_edit.head = (1.0, 0.0, 0.0)
+    second_edit.tail = (1.0, 0.0, 1.0)
+
+    edit_context = button_context(
+        first_edit,
+        "head",
+        object=armature_object,
+        active_object=armature_object,
+        active_bone=first_edit,
+        selected_editable_bones=[first_edit, second_edit],
+    )
+    description = extension._describe_button(edit_context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_EDIT_BONE
+    assert len(context_targets(extension, edit_context, description)) == 2
+
+    bpy.ops.object.mode_set(mode="POSE")
+    first_pose = armature_object.pose.bones["First"]
+    second_pose = armature_object.pose.bones["Second"]
+    pose_context = button_context(
+        first_pose,
+        "location",
+        object=armature_object,
+        active_object=armature_object,
+        active_pose_bone=first_pose,
+        active_bone=first_pose.bone,
+        selected_pose_bones=[first_pose, second_pose],
+    )
+    description = extension._describe_button(pose_context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_POSE_BONE
+    assert len(context_targets(extension, pose_context, description)) == 2
+
+    first_constraint = first_pose.constraints.new("COPY_LOCATION")
+    second_constraint = second_pose.constraints.new("COPY_LOCATION")
+    first_constraint.name = second_constraint.name = "Shared Constraint"
+    constraint_context = button_context(
+        first_constraint,
+        "influence",
+        object=armature_object,
+        active_object=armature_object,
+        active_pose_bone=first_pose,
+        active_bone=first_pose.bone,
+        selected_pose_bones=[first_pose, second_pose],
+    )
+    description = extension._describe_button(constraint_context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_POSE_BONE
+    assert description.owner_path == 'constraints["Shared Constraint"]'
+    assert len(context_targets(extension, constraint_context, description)) == 2
+
+    color_context = button_context(
+        first_pose.color,
+        "palette",
+        object=armature_object,
+        active_object=armature_object,
+        active_pose_bone=first_pose,
+        active_bone=first_pose.bone,
+        selected_pose_bones=[first_pose, second_pose],
+    )
+    description = extension._describe_button(color_context)
+    assert description is not None
+    assert description.owner_path == "color"
+    assert len(context_targets(extension, color_context, description)) == 2
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+
+def check_animation_targets(extension):
+    mesh = bpy.data.meshes.new("RandomizeValue_AnimationMesh")
+    obj = bpy.data.objects.new("RandomizeValue_Animation", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    obj.animation_data_create()
+    action = bpy.data.actions.new("RandomizeValue_Action")
+    obj.animation_data.action = action
+    first_curve = action.fcurve_ensure_for_datablock(obj, "location", index=0)
+    second_curve = action.fcurve_ensure_for_datablock(obj, "location", index=1)
+    first_key = first_curve.keyframe_points.insert(1.0, 1.0)
+    second_key = second_curve.keyframe_points.insert(1.0, 2.0)
+    first_modifier = first_curve.modifiers.new("NOISE")
+    second_modifier = second_curve.modifiers.new("NOISE")
+
+    curve_context = button_context(
+        first_curve,
+        "extrapolation",
+        selected_editable_fcurves=[first_curve, second_curve],
+    )
+    description = extension._describe_button(curve_context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_FCURVE
+    assert len(context_targets(extension, curve_context, description)) == 2
+
+    modifier_context = button_context(
+        first_modifier,
+        "strength",
+        selected_editable_fcurves=[first_curve, second_curve],
+    )
+    description = extension._describe_button(modifier_context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_FCURVE_MODIFIER
+    assert description.match_type == "NOISE"
+    assert len(context_targets(extension, modifier_context, description)) == 2
+
+    key_context = button_context(
+        first_key,
+        "interpolation",
+        selected_editable_keyframes=[first_key, second_key],
+    )
+    description = extension._describe_button(key_context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_KEYFRAME
+    assert len(context_targets(extension, key_context, description)) == 2
+
+    second_action = bpy.data.actions.new("RandomizeValue_ActionTwo")
+    action_context = button_context(
+        action,
+        "use_cyclic",
+        selected_editable_actions=[action, second_action],
+    )
+    description = extension._describe_button(action_context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_ACTION
+    assert len(context_targets(extension, action_context, description)) == 2
+
+    track = obj.animation_data.nla_tracks.new()
+    first_strip = track.strips.new("First", 1, action)
+    second_strip = track.strips.new("Second", 100, action)
+    nla_context = button_context(
+        first_strip,
+        "scale",
+        selected_nla_strips=[first_strip, second_strip],
+    )
+    description = extension._describe_button(nla_context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_NLA_STRIP
+    assert len(context_targets(extension, nla_context, description)) == 2
+
+
+def check_strip_targets(extension):
+    sequence_editor = bpy.context.scene.sequence_editor_create()
+    first = sequence_editor.strips.new_effect(
+        name="RandomizeValue_StripA",
+        type="COLOR",
+        channel=1,
+        frame_start=1,
+        length=20,
+    )
+    second = sequence_editor.strips.new_effect(
+        name="RandomizeValue_StripB",
+        type="TEXT",
+        channel=2,
+        frame_start=1,
+        length=20,
+    )
+    context = button_context(
+        first.transform,
+        "offset_x",
+        selected_editable_strips=[first, second],
+        selected_strips=[first, second],
+    )
+    description = extension._describe_button(context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_STRIP
+    assert description.owner_path == "transform"
+    assert len(context_targets(extension, context, description)) == 2
+
+    direct_context = button_context(
+        first,
+        "blend_alpha",
+        selected_editable_strips=[first, second],
+        selected_strips=[first, second],
+    )
+    description = extension._describe_button(direct_context)
+    assert description is not None
+    assert description.owner_type == ""
+    assert len(context_targets(extension, direct_context, description)) == 2
+
+
+def check_shape_key_targets(extension):
+    mesh = bpy.data.meshes.new("RandomizeValue_ShapeMesh")
+    obj = bpy.data.objects.new("RandomizeValue_Shape", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    obj.shape_key_add(name="Basis")
+    first = obj.shape_key_add(name="First")
+    second = obj.shape_key_add(name="Second")
+    ignored = obj.shape_key_add(name="Ignored")
+    first.select = second.select = True
+    ignored.select = False
+    context = button_context(first, "value", object=obj, active_object=obj)
+    description = extension._describe_button(context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_SHAPE_KEY
+    targets = context_targets(extension, context, description)
+    assert {target[0].name for target in targets} == {"First", "Second"}
+
+
+def check_asset_metadata_targets(extension):
+    first = bpy.data.materials.new("RandomizeValue_AssetA")
+    second = bpy.data.materials.new("RandomizeValue_AssetB")
+    first.asset_mark()
+    second.asset_mark()
+    context = button_context(
+        first.asset_data,
+        "active_tag",
+        selected_assets=[
+            SimpleNamespace(metadata=first.asset_data),
+            SimpleNamespace(metadata=second.asset_data),
+        ],
+    )
+    description = extension._describe_button(context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_ASSET_METADATA
+    assert len(context_targets(extension, context, description)) == 2
+
+
+def check_node_interface_targets(extension):
+    node_group = bpy.data.node_groups.new(
+        "RandomizeValue_InterfaceTree",
+        "GeometryNodeTree",
+    )
+    source = node_group.interface.new_socket(
+        name="Source",
+        in_out="INPUT",
+        socket_type="NodeSocketFloat",
+    )
+    matching = node_group.interface.new_socket(
+        name="Matching",
+        in_out="INPUT",
+        socket_type="NodeSocketFloat",
+    )
+    different = node_group.interface.new_socket(
+        name="Different",
+        in_out="INPUT",
+        socket_type="NodeSocketVector",
+    )
+    source.select = matching.select = different.select = True
+
+    context = button_context(source, "default_value")
+    description = extension._describe_button(context)
+    assert description is not None
+    assert description.root_mode == extension.ROOT_NODE_INTERFACE
+    assert {target[0].name for target in context_targets(extension, context, description)} == {
+        "Source",
+        "Matching",
+    }
+
+    generic_context = button_context(source, "hide_value")
+    description = extension._describe_button(generic_context)
+    assert description is not None
+    assert len(context_targets(extension, generic_context, description)) == 3
+
+
+def check_outliner_object_targets(extension):
+    first = bpy.data.objects.new("RandomizeValue_OutlinerA", None)
+    second = bpy.data.objects.new("RandomizeValue_OutlinerB", None)
+    bpy.context.scene.collection.objects.link(first)
+    bpy.context.scene.collection.objects.link(second)
+    context = button_context(
+        first,
+        "display_type",
+        object=first,
+        active_object=first,
+        selected_ids=[first, second],
+    )
+    assert extension._selected_objects(context) == [first, second]
+
+
 def check_node_tree_targets(extension, node_tree, node_type, other_node_type):
     node_tree.nodes.clear()
     source = node_tree.nodes.new(node_type)
@@ -225,6 +546,14 @@ extension = load_extension()
 extension.register()
 
 try:
+    check_bone_targets(extension)
+    check_animation_targets(extension)
+    check_strip_targets(extension)
+    check_shape_key_targets(extension)
+    check_asset_metadata_targets(extension)
+    check_node_interface_targets(extension)
+    check_outliner_object_targets(extension)
+
     material = bpy.data.materials.new("RandomizeValue_ShaderMaterial")
     material.use_nodes = True
     check_node_tree_targets(extension, material.node_tree, "ShaderNodeValue", "ShaderNodeMath")
